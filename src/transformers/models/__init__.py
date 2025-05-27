@@ -253,6 +253,7 @@ if TYPE_CHECKING:
     from .resnet import *
     from .roberta import *
     from .roberta_prelayernorm import *
+    from .robobrain import *
     from .roc_bert import *
     from .roformer import *
     from .rt_detr import *

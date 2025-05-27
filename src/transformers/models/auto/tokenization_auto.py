@@ -516,6 +516,7 @@ else:
                 "roberta-prelayernorm",
                 ("RobertaTokenizer", "RobertaTokenizerFast" if is_tokenizers_available() else None),
             ),
+            ("robobrain", ("Qwen2Tokenizer", "Qwen2TokenizerFast" if is_tokenizers_available() else None)),
             ("roc_bert", ("RoCBertTokenizer", None)),
             ("roformer", ("RoFormerTokenizer", "RoFormerTokenizerFast" if is_tokenizers_available() else None)),
             ("rwkv", (None, "GPTNeoXTokenizerFast" if is_tokenizers_available() else None)),

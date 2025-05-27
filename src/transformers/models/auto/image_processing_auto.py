@@ -139,6 +139,7 @@ else:
             ("qwen2_vl", ("Qwen2VLImageProcessor", "Qwen2VLImageProcessorFast")),
             ("regnet", ("ConvNextImageProcessor", "ConvNextImageProcessorFast")),
             ("resnet", ("ConvNextImageProcessor", "ConvNextImageProcessorFast")),
+            ("robobrain", ("Qwen2VLImageProcessor", "Qwen2VLImageProcessorFast")),
             ("rt_detr", ("RTDetrImageProcessor", "RTDetrImageProcessorFast")),
             ("sam", ("SamImageProcessor",)),
             ("sam_hq", ("SamImageProcessor",)),

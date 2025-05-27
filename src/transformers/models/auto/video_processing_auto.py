@@ -54,6 +54,7 @@ else:
             ("qwen2_5_omni", "Qwen2VLVideoProcessor"),
             ("qwen2_5_vl", "Qwen2VLVideoProcessor"),
             ("qwen2_vl", "Qwen2VLVideoProcessor"),
+            ("robobrain", "Qwen2VLVideoProcessor"),
             ("smolvlm", "SmolVLMVideoProcessor"),
             ("video_llava", "VideoLlavaVideoProcessor"),
         ]

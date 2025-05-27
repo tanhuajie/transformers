@@ -245,6 +245,7 @@ VLMS = [
     "paligemma",
     "qwen2vl",
     "qwen2_5_vl",
+    "robobrain",
     "videollava",
     "vipllava",
 ]
