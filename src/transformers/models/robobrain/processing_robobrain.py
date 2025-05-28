@@ -167,7 +167,11 @@ class RoboBrainProcessor(ProcessorMixin):
 
         if depths is not None:
             depths = self._copy_depth_channels(depths)
-            depth_inputs = self.image_processor(images=depths, **output_kwargs["images_kwargs"])
+            depth_image_inputs = self.image_processor(images=depths, **output_kwargs["images_kwargs"])
+            depth_inputs = {
+                "depth_values": depth_image_inputs["pixel_values"],
+                "depth_grid_thw": depth_image_inputs["image_grid_thw"],
+            }
             depth_grid_thw = depth_inputs["image_grid_thw"]
 
         if videos is not None:
