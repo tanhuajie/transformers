@@ -1156,7 +1156,7 @@ class RoboBrainProcessor(Qwen2_5_VLProcessor):
             image_grid_thw = image_inputs["image_grid_thw"]
 
         if depths is not None:
-            depths = self.copy_depth_channels(depths)
+            depths = self._copy_depth_channels(depths)
             depth_inputs = self.image_processor(images=depths, **output_kwargs["images_kwargs"])
             depth_grid_thw = depth_inputs["image_grid_thw"]
 
