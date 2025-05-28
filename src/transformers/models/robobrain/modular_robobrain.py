@@ -1162,7 +1162,7 @@ class RoboBrainProcessor(Qwen2_5_VLProcessor):
                 "depth_values": depth_image_inputs["pixel_values"],
                 "depth_grid_thw": depth_image_inputs["image_grid_thw"],
             }
-            depth_grid_thw = depth_inputs["image_grid_thw"]
+            depth_grid_thw = depth_inputs["depth_grid_thw"]
 
         if videos is not None:
             videos_inputs = self.video_processor(videos=videos, **output_kwargs["videos_kwargs"])
