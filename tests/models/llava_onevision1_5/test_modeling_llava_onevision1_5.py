@@ -1,4 +1,4 @@
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +13,10 @@
 # limitations under the License.
 """Testing suite for the PyTorch Llava-OneVision-1.5 model."""
 
+import copy
 import unittest
 
-import numpy as np
 import requests
-from huggingface_hub import hf_hub_download
-from parameterized import parameterized
 
 from transformers import (
     AutoProcessor,
@@ -31,11 +29,13 @@ from transformers import (
 from transformers.testing_utils import (
     Expectations,
     cleanup,
-    require_bitsandbytes,
+    require_flash_attn,
     require_torch,
+    require_torch_gpu,
     slow,
     torch_device,
 )
+from transformers.utils import is_cv2_available
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
@@ -49,132 +49,127 @@ from ...test_modeling_common import (
 
 if is_torch_available():
     import torch
-
+else:
+    is_torch_greater_or_equal_than_2_0 = False
 
 if is_vision_available():
     from PIL import Image
 
 
-class LlavaOnevisionVisionText2TextModelTester:
+class LlavaOnevisionVision1_5Text2TextModelTester:
     def __init__(
         self,
-        parent,
-        ignore_index=-100,
-        image_token_index=1,
-        video_token_index=2,
-        projector_hidden_act="gelu",
+        batch_size=3,
+        num_channels=3,
+        image_size=14,
         seq_length=7,
-        vision_feature_select_strategy="full",
-        vision_feature_layer=-1,
-        text_config={
-            "model_type": "qwen2",
-            "seq_length": 7,
-            "is_training": True,
-            "use_input_mask": True,
-            "use_token_type_ids": False,
-            "use_labels": True,
-            "vocab_size": 99,
-            "hidden_size": 32,
-            "num_hidden_layers": 2,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 4,
-            "intermediate_size": 37,
+        ignore_index=-100,
+        bos_token_id=0,
+        eos_token_id=1,
+        pad_token_id=2,
+        vision_start_token_id=3,
+        image_token_id = 151655,
+        video_token_id = 151656,
+        vocab_size = 151936,
+        text_config = {
+            "attention_bias": False,
+            "attention_dropout": 0.0,
+            "head_dim": 128,
+            "hidden_act": "silu",
+            "hidden_size": 4096,
+            "image_token_id": None,
+            "initializer_range": 0.02,
+            "intermediate_size": 12288,
+            "tie_word_embeddings": False,
+            "layer_types": ["full_attention" for _ in range(36)],
+            "max_position_embeddings": 32768,
+            "max_window_layers": 36,
+            "model_type": "qwen3",
+            "num_attention_heads": 32,
+            "num_hidden_layers": 36,
+            "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-06,
+            "rope_scaling": None,
+            "rope_theta": 1000000.0,
+            "sliding_window": None,
+            "use_cache": True,
+            "use_sliding_window": False,
+            "video_token_id": None,
+            "vocab_size": 151936
+        },
+        vision_config = {
+            "depth": 24,
+            "embed_dim": 1024,
             "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
-            "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": 580,
-            "type_vocab_size": 16,
-            "type_sequence_label_size": 2,
+            "hidden_size": 1024,
+            "in_channels": 3,
             "initializer_range": 0.02,
-            "num_labels": 3,
-            "num_choices": 4,
-            "pad_token_id": 0,
-        },
-        is_training=True,
-        vision_config={
-            "image_size": 16,
-            "patch_size": 8,
-            "num_channels": 3,
-            "is_training": True,
-            "hidden_size": 32,
-            "projection_dim": 32,
-            "num_hidden_layers": 2,
-            "num_attention_heads": 4,
-            "intermediate_size": 37,
-            "dropout": 0.1,
-            "attention_dropout": 0.1,
-            "initializer_range": 0.02,
-        },
+            "intermediate_size": 4096,
+            "layer_norm_eps": 1e-05,
+            "model_type": "rice_vit",
+            "num_heads": 16,
+            "patch_size": 14,
+            "spatial_merge_size": 2,
+            "temporal_patch_size": 1,
+            "text_hidden_size": 4096
+        }
     ):
-        self.parent = parent
-        self.ignore_index = ignore_index
-        self.image_token_index = image_token_index
-        self.video_token_index = video_token_index
-        self.projector_hidden_act = projector_hidden_act
-        self.vision_feature_select_strategy = vision_feature_select_strategy
-        self.vision_feature_layer = vision_feature_layer
         self.text_config = text_config
         self.vision_config = vision_config
-        self.pad_token_id = text_config["pad_token_id"]
-        self.num_image_tokens = 10
+        self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
+        self.vocab_size = vocab_size
+
+        self.batch_size = batch_size
+        self.num_channels = num_channels
+        self.image_size = image_size
+        self.num_image_tokens = 32
         self.seq_length = seq_length + self.num_image_tokens
-
-        self.num_hidden_layers = text_config["num_hidden_layers"]
-        self.vocab_size = text_config["vocab_size"]
-        self.hidden_size = text_config["hidden_size"]
-        self.num_attention_heads = text_config["num_attention_heads"]
-        self.is_training = is_training
-
-        self.batch_size = 3
-        self.num_channels = 3
-        self.image_size = 30
-        self.image_grid_pinpoints = [[16, 16]]
+        self.ignore_index = ignore_index
+        self.pad_token_id = pad_token_id
+        self.vision_start_token_id = vision_start_token_id
 
     def get_config(self):
         return LlavaOnevision1_5Config(
             text_config=self.text_config,
             vision_config=self.vision_config,
-            ignore_index=self.ignore_index,
-            image_token_index=self.image_token_index,
-            video_token_index=self.video_token_index,
-            projector_hidden_act=self.projector_hidden_act,
-            vision_feature_select_strategy=self.vision_feature_select_strategy,
-            vision_feature_layer=self.vision_feature_layer,
-            image_grid_pinpoints=self.image_grid_pinpoints,
+            image_token_id = 151655,
+            video_token_id = 151656,
+            vocab_size = 152064
         )
 
     def prepare_config_and_inputs(self):
+        config = self.get_config()
+        patch_size = config.vision_config.patch_size
+        temporal_patch_size = config.vision_config.temporal_patch_size
         pixel_values = floats_tensor(
             [
-                self.batch_size,
-                3,
-                self.vision_config["num_channels"],
-                self.vision_config["image_size"],
-                self.vision_config["image_size"],
+                self.batch_size * (self.image_size**2) // (patch_size**2),
+                self.num_channels * (patch_size**2) * temporal_patch_size,
             ]
         )
-        config = self.get_config()
 
         return config, pixel_values
 
     def prepare_config_and_inputs_for_common(self):
         config_and_inputs = self.prepare_config_and_inputs()
         config, pixel_values = config_and_inputs
-        input_ids = ids_tensor([self.batch_size, self.seq_length], config.text_config.vocab_size - 2) + 2
-        attention_mask = torch.ones(input_ids.shape, dtype=torch.long).to(torch_device)
+        input_ids = ids_tensor([self.batch_size, self.seq_length], self.vocab_size)
+        attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=torch_device)
 
-        input_ids[input_ids == config.image_token_index] = self.pad_token_id
-        input_ids[:, : self.num_image_tokens] = config.image_token_index
-
-        labels = torch.zeros((self.batch_size, self.seq_length), dtype=torch.long, device=torch_device)
-        labels[:, : self.num_image_tokens] == self.ignore_index
-
+        input_ids[:, -1] = self.pad_token_id
+        input_ids[input_ids == self.video_token_id] = self.pad_token_id
+        input_ids[input_ids == self.image_token_id] = self.pad_token_id
+        input_ids[input_ids == self.vision_start_token_id] = self.pad_token_id
+        input_ids[:, self.num_image_tokens] = self.image_token_id
+        input_ids[:, self.num_image_tokens - 1] = self.vision_start_token_id
         inputs_dict = {
             "pixel_values": pixel_values,
-            "image_sizes": torch.tensor([[45, 45]] * self.batch_size),
+            "image_grid_thw": torch.tensor([[1, 1, 1]] * self.batch_size, device=torch_device),
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "labels": labels,
         }
         return config, inputs_dict
 
@@ -207,7 +202,7 @@ class LlavaOnevision1_5ForConditionalGenerationModelTest(ModelTesterMixin, Gener
     _is_composite = True
 
     def setUp(self):
-        self.model_tester = LlavaOnevisionVisionText2TextModelTester(self)
+        self.model_tester = LlavaOnevisionVision1_5Text2TextModelTester(self)
         common_properties = ["image_token_index", "video_token_index", "vision_feature_layer"]
         self.config_tester = ConfigTester(
             self, config_class=LlavaOnevision1_5Config, has_text_modality=False, common_properties=common_properties
@@ -223,79 +218,70 @@ class LlavaOnevision1_5ForConditionalGenerationModelTest(ModelTesterMixin, Gener
         for model_class in self.all_model_classes:
             model = model_class(config=configs_no_init)
             for name, param in model.named_parameters():
-                # LLaVa Onevision has SigLIP backbone which init weights differently from CLIP
-                if "image_newline" in name or "vision_tower" in name:
-                    continue
-                elif param.requires_grad:
+                if param.requires_grad:
                     self.assertIn(
                         ((param.data.mean() * 1e9).round() / 1e9).item(),
                         [0.0, 1.0],
                         msg=f"Parameter {name} of model {model_class} seems not properly initialized",
                     )
 
-    def test_odd_sized_image(self):
-        # prepare model configuration
-        config = self.model_tester.get_config()
-
-        # prepare input
-        num_image_tokens = 10
-        pixel_values = floats_tensor([1, 2, 3, config.vision_config.image_size, config.vision_config.image_size])
-        input_ids = ids_tensor([1, 64], config.text_config.vocab_size - 2) + 2
-        input_ids[:, :num_image_tokens] = config.image_token_index
-        attention_mask = torch.ones(input_ids.shape, dtype=torch.long).to(torch_device)
-        inputs_dict = {
-            "pixel_values": pixel_values,
-            "image_sizes": torch.tensor([[13, 16]]),  # odd-sized image
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
-
-        # forward with odd-sized image input
-        for model_class in self.all_model_classes:
-            model = model_class(config).to(torch_device)
-            model(**inputs_dict)
-
-    @parameterized.expand(
-        [
-            (-1,),
-            ([-1],),
-            ([-1, -2],),
-        ],
-    )
-    def test_vision_feature_layers(self, vision_feature_layer):
+    def test_mismatching_num_image_tokens(self):
         """
-        Test that we can use either one vision feature layer, or a list of
-        vision feature layers.
+        Tests that VLMs through an error with explicit message saying what is wrong
+        when number of images don't match number of image tokens in the text.
+        Also we need to test multi-image cases when one prompr has multiple image tokens.
         """
         config, input_dict = self.model_tester.prepare_config_and_inputs_for_common()
-        config.vision_feature_layer = vision_feature_layer
-
-        num_feature_layers = 1 if isinstance(vision_feature_layer, int) else len(vision_feature_layer)
-        hidden_size = config.vision_config.hidden_size
-        expected_features = hidden_size * num_feature_layers
-
         for model_class in self.all_model_classes:
             model = model_class(config).to(torch_device)
-            # We should have the right number of input features,
-            # and should be able to run a forward pass without exploding
-            base_model = getattr(model, "model", model)
-            assert base_model.multi_modal_projector.linear_1.in_features == expected_features
-            model(**input_dict)
+            _ = model(**input_dict)  # successful forward with no modifications
+            curr_input_dict = copy.deepcopy(input_dict)
+
+            # remove one image but leave the image token in text
+            patch_size = config.vision_config.patch_size
+            one_img_length = (self.model_tester.image_size**2) // (patch_size**2)
+            curr_input_dict["pixel_values"] = curr_input_dict["pixel_values"][-one_img_length:, ...]
+            curr_input_dict["image_grid_thw"] = curr_input_dict["image_grid_thw"][-1:, ...]
+            with self.assertRaises(ValueError):
+                _ = model(**curr_input_dict)
+
+            # simulate multi-image case by concatenating inputs where each has exactly one image/image-token
+            input_ids = curr_input_dict["input_ids"][:1]
+            pixel_values = curr_input_dict["pixel_values"][:one_img_length]
+            image_grid_thw = curr_input_dict["image_grid_thw"][:1]
+            input_ids = torch.cat([input_ids, input_ids], dim=0)
+
+            # one image and two image tokens raise an error
+            with self.assertRaises(ValueError):
+                _ = model(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    image_grid_thw=image_grid_thw,
+                )
+
+            # two images and two image tokens don't raise an error
+            pixel_values = torch.cat([pixel_values, pixel_values], dim=0)
+            image_grid_thw = torch.cat([image_grid_thw, image_grid_thw], dim=0)
+            _ = model(
+                input_ids=input_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+            )
 
     @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, SiglipVisionModel does not support standalone training"
+        reason="This architecture seem to not compute gradients properly when using GC, RiceVisionModel does not support standalone training"
     )
     def test_training_gradient_checkpointing(self):
         pass
 
     @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, SiglipVisionModel does not support standalone training"
+        reason="This architecture seem to not compute gradients properly when using GC, RiceVisionModel does not support standalone training"
     )
     def test_training_gradient_checkpointing_use_reentrant(self):
         pass
 
     @unittest.skip(
-        reason="This architecture seem to not compute gradients properly when using GC, SiglipVisionModel does not support standalone training"
+        reason="This architecture seem to not compute gradients properly when using GC, RiceVisionModel does not support standalone training"
     )
     def test_training_gradient_checkpointing_use_reentrant_false(self):
         pass
@@ -310,73 +296,78 @@ class LlavaOnevision1_5ForConditionalGenerationModelTest(ModelTesterMixin, Gener
 @require_torch
 class LlavaOnevision1_5ForConditionalGenerationIntegrationTest(unittest.TestCase):
     def setUp(self):
-        self.processor = AutoProcessor.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf", padding_side="left"
-        )
-        image_file = hf_hub_download(
-            repo_id="raushan-testing-hf/images_test", filename="llava_v1_5_radar.jpg", repo_type="dataset"
-        )
-        video_file = hf_hub_download(
-            repo_id="raushan-testing-hf/videos-test", filename="video_demo.npy", repo_type="dataset"
-        )
-        self.image = Image.open(image_file)
-        self.video = np.load(video_file)
-        self.prompt_image = "user\n<image>\nWhat do you see in this image?<|im_end|>\n<|im_start|>assistant\n"
-        self.prompt_video = "user\n<video>\nWhat do you see in this video?<|im_end|>\n<|im_start|>assistant\n"
+        self.processor = AutoProcessor.from_pretrained("Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf")
+        self.messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": "What kind of dog is this?"},
+                ],
+            }
+        ]
+        url = "https://qianwen-res.oss-accelerate-overseas.aliyuncs.com/Qwen2-VL/demo_small.jpg"
+        self.image = Image.open(requests.get(url, stream=True).raw)
+
+        cleanup(torch_device, gc_collect=True)
 
     def tearDown(self):
         cleanup(torch_device, gc_collect=True)
 
     @slow
-    @require_bitsandbytes
     def test_small_model_integration_test(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf", dtype="float16", device_map=torch_device
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf", dtype="auto", device_map="auto"
         )
 
-        inputs = self.processor(images=self.image, text=self.prompt_image, return_tensors="pt").to(
-            torch_device, torch.float16
-        )
-        self.assertTrue(inputs.input_ids.shape[1] == 6567)  # should expand num-image-tokens times
-        self.assertTrue(inputs.pixel_values.shape == torch.Size([1, 10, 3, 384, 384]))
-        self.assertTrue(inputs.image_sizes.tolist() == [[899, 1024]])
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text], images=[self.image], return_tensors="pt")
 
-        # verify single forward pass
+        expected_input_ids = [151644, 8948, 198, 2610, 525, 264, 10950, 17847, 13, 151645, 198, 151644, 872, 198, 151652, 151655, 151655]  # fmt: skip
+        torch.testing.assert_close(expected_input_ids, inputs.input_ids[0].tolist()[:17])
+
+        expected_pixel_slice = torch.tensor(
+            [
+                [0.8792, 0.8792, 0.9084],
+                [1.1858, 1.1858, 1.2296],
+                [1.2004, 1.2004, 1.2150],
+                [1.4340, 1.4340, 1.4194],
+                [1.3902, 1.4048, 1.4194],
+                [1.5216, 1.5362, 1.5362],
+            ],
+            dtype=torch.float32,
+            device="cpu",
+        )
+        torch.testing.assert_close(expected_pixel_slice, inputs.pixel_values[:6, :3], atol=5e-4, rtol=1e-5)
+
+        # verify generation
         inputs = inputs.to(torch_device)
 
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=100)
+        output = model.generate(**inputs, max_new_tokens=30)
+        EXPECTED_DECODED_TEXT = 'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever'
 
-        EXPECTED_DECODED_TEXTS = Expectations(
-            {
-                ("xpu", 3): 'user\n\nWhat do you see in this image?\nassistant\nThe image is a radar chart that compares the performance of different models in a specific task, likely related to natural language processing or machine learning. The chart is divided into several axes, each representing a different model or method. The models are color-coded and labeled with their respective names. The axes are labeled with terms such as "VQA," "GQA," "MQA," "VQAv2," "MM-Vet," "LLaVA-Bench," "LLaVA-1',
-                ("cuda", 7): 'user\n\nWhat do you see in this image?\nassistant\nThe image is a radar chart that compares the performance of different models in a specific task, likely related to natural language processing or machine learning. The chart is divided into several axes, each representing a different model or method. The models are color-coded and labeled with their respective names. The axes are labeled with terms such as "VQA," "GQA," "MQA," "VQAv2," "MM-Vet," "LLaVA-Bench," "LLaVA-1',
-                ("cuda", 8): 'user\n\nWhat do you see in this image?\nassistant\nThe image is a radar chart that compares the performance of different models in a specific task, likely related to natural language processing or machine learning. The chart is divided into several axes, each representing a different model or method. The models are color-coded and labeled with their respective names. The axes are labeled with terms such as "VQA," "GQA," "MQA," "VIZ," "TextVQA," "SQA-IMG," and "MQE." The radar chart shows',
-            }
-        )  # fmt: skip
-        EXPECTED_DECODED_TEXT = EXPECTED_DECODED_TEXTS.get_expectation()
-        DECODED_TEXT = self.processor.decode(output[0], skip_special_tokens=True)
-
-        self.assertEqual(DECODED_TEXT, EXPECTED_DECODED_TEXT)
+        self.assertEqual(
+            self.processor.decode(output[0], skip_special_tokens=True),
+            EXPECTED_DECODED_TEXT,
+        )
 
     @slow
-    @require_bitsandbytes
     def test_small_model_integration_test_batch(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf", dtype="float16", device_map=torch_device
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf", dtype="auto", device_map="auto"
+        )
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text, text], images=[self.image, self.image], return_tensors="pt").to(
+            torch_device
         )
 
-        inputs = self.processor(
-            text=[self.prompt_image, self.prompt_video],
-            images=self.image,
-            videos=self.video,
-            return_tensors="pt",
-            padding=True,
-        ).to(torch_device, torch.float16)
+        # it should not matter whether two images are the same size or not
+        output = model.generate(**inputs, max_new_tokens=30)
 
-        output = model.generate(**inputs, max_new_tokens=20)
-
-        EXPECTED_DECODED_TEXT = ['user\n\nWhat do you see in this image?\nassistant\nThe image is a radar chart that compares the performance of different models in a specific task, likely related', 'user\n\nWhat do you see in this video?\nassistant\nA child wearing a light blue sleeveless top and pink pants is seen sitting on a bed, eng']  # fmt: skip
+        EXPECTED_DECODED_TEXT = [
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+        ]  # fmt: skip
 
         self.assertEqual(
             self.processor.batch_decode(output, skip_special_tokens=True),
@@ -384,172 +375,166 @@ class LlavaOnevision1_5ForConditionalGenerationIntegrationTest(unittest.TestCase
         )
 
     @slow
-    @require_bitsandbytes
-    def test_small_model_integration_test_video(self):
-        # related to (#29835)
+    def test_small_model_integration_test_expand(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
-            dtype="float16",
-            device_map=torch_device,
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf", dtype="auto", device_map="auto"
         )
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text], images=[self.image], return_tensors="pt").to(torch_device)
 
-        inputs = self.processor(text=self.prompt_video, videos=self.video, return_tensors="pt").to(
-            torch_device, torch.float16
-        )
+        output = model.generate(**inputs, max_new_tokens=30, num_return_sequences=3)
 
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=40)
-        EXPECTED_DECODED_TEXT = 'user\n\nWhat do you see in this video?\nassistant\nA child wearing a light blue sleeveless top and pink pants is seen sitting on a bed, engrossed in reading a book.'  # fmt: skip
+        EXPECTED_DECODED_TEXT = [
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+        ]  # fmt: skip
 
         self.assertEqual(
-            self.processor.decode(output[0], skip_special_tokens=True),
+            self.processor.batch_decode(output, skip_special_tokens=True),
             EXPECTED_DECODED_TEXT,
         )
 
     @slow
-    @require_bitsandbytes
-    def test_small_model_integration_test_multi_image(self):
-        # related to (#29835)
+    def test_small_model_integration_test_batch_wo_image(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
-            dtype="float16",
-            device_map=torch_device,
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf", dtype="auto", device_map="auto"
         )
-
-        url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/tasks/australia.jpg"
-        image = Image.open(requests.get(url, stream=True).raw)
-        prompt = (
-            "user\n<image><image>\nWhat is the difference between these images?<|im_end|>\n<|im_start|>assistant\n"
-        )
-        inputs = self.processor(text=prompt, images=[self.image, image], return_tensors="pt").to(
-            torch_device, torch.float16
-        )
-
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=40)
-        EXPECTED_DECODED_TEXT = "user\n\nWhat is the difference between these images?\nassistant\nThe images you've provided appear to be related to a graphical representation of a radar chart, which is a type of data visualization used to show the distribution of a particular variable across a geographic area. The"  # fmt: skip
-
-        self.assertEqual(
-            self.processor.decode(output[0], skip_special_tokens=True),
-            EXPECTED_DECODED_TEXT,
-        )
-
-    @slow
-    @require_bitsandbytes
-    def test_small_model_integration_test_multi_image_nested(self):
-        # related to (#34585)
-        model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
-            dtype="float16",
-            device_map=torch_device,
-        )
-
-        url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/tasks/australia.jpg"
-        image = Image.open(requests.get(url, stream=True).raw)
-        prompts = [
-            "user\nTell me about the french revolution.<|im_end|>\n<|im_start|>assistant\n",  # text-only case
-            "user\n<image><image>\nWhat is the difference between these images?<|im_end|>\n<|im_start|>assistant\n",
-            self.prompt_image,
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        messages2 = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Who are you?"},
         ]
-        images_nested = [[], [image, self.image], [self.image]]
-        inputs = self.processor(
-            text=prompts,
-            images=images_nested,
-            return_tensors="pt",
-            padding=True,
-        ).to(torch_device, torch.float16)
-
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=40)
-        EXPECTED_DECODED_TEXT = ["user\nTell me about the french revolution.\nassistant\nThe French Revolution! A pivotal event in modern history that had a profound impact on the course of Western civilization. Here's a brief overview:\n\n**Background**\n\nIn the late 18th century,", "user\n\nWhat is the difference between these images?\nassistant\nThe first image shows a stop sign with a traditional Chinese architectural background, while the second image displays a radar chart with various algorithms and models, including BLIP-2, InstructBLIP, Q", "user\n\nWhat do you see in this image?\nassistant\nThe image is a radar chart that compares the performance of different models in a specific task, likely related to natural language processing or machine learning. The chart is divided into several axes, each representing a different"]  # fmt: skip
-        DECODED_TEXT = self.processor.batch_decode(output, skip_special_tokens=True)
-
-        self.assertListEqual(DECODED_TEXT, EXPECTED_DECODED_TEXT)
-
-    @slow
-    @require_bitsandbytes
-    def test_small_model_integration_test_multi_video(self):
-        # related to (#29835)
-        model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
-            dtype="float16",
-            device_map=torch_device,
+        text2 = self.processor.apply_chat_template(messages2, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text, text2], images=[self.image], padding=True, return_tensors="pt").to(
+            torch_device
         )
 
-        prompt = "user\n<video><video>\nAre these videos identical?<|im_end|>\n<|im_start|>assistant\n"
-        inputs = self.processor(text=prompt, videos=[self.video, self.video], return_tensors="pt").to(
-            torch_device, torch.float16
-        )
+        # it should not matter whether two images are the same size or not
+        output = model.generate(**inputs, max_new_tokens=30)
 
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=40)
-        EXPECTED_DECODED_TEXT = "user\n\nAre these videos identical?\nassistant\nNo, the video is not identical; it shows slight variations in the child's actions and the background."  # fmt: skip
+        EXPECTED_DECODED_TEXT = [
+            'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+            'system\nYou are a helpful assistant.\nuser\nWho are you?\nassistant\nHuman',
+        ]  # fmt: skip
 
         self.assertEqual(
-            self.processor.decode(output[0], skip_special_tokens=True),
+            self.processor.batch_decode(output, skip_special_tokens=True),
             EXPECTED_DECODED_TEXT,
         )
 
     @slow
-    @require_bitsandbytes
     def test_small_model_integration_test_batch_different_resolutions(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf", dtype="float16", device_map=torch_device
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf", dtype="auto", device_map="auto"
         )
-
-        url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        lowres_url = "https://4.img-dpreview.com/files/p/TS560x560~forums/56876524/03975b28741443319e9a94615e35667e"
-        cats_image = Image.open(requests.get(url, stream=True).raw)
-        lowres_img = Image.open(requests.get(lowres_url, stream=True).raw)
-
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        text2 = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        image2 = self.image.resize((224, 224))
         inputs = self.processor(
-            text=[self.prompt_image, self.prompt_image],
-            images=[lowres_img, cats_image],
-            return_tensors="pt",
+            text=[text, text2],
+            images=[self.image, image2],
             padding=True,
-        ).to(torch_device, torch.float16)
+            return_tensors="pt",
+        ).to(torch_device)
 
-        # verify generation
-        output = model.generate(**inputs, max_new_tokens=50)
-        EXPECTED_DECODED_TEXT = [
-            'user\n\nWhat do you see in this image?\nassistant\nThe image shows a scene of two deer in a grassy area with trees in the background. The weather appears to be foggy, giving the scene a misty and somewhat mysterious atmosphere. The deer are standing close to each other, possibly grazing or',
-            'user\n\nWhat do you see in this image?\nassistant\nIn the tranquil setting of this image, two cats are enjoying a peaceful nap on a vibrant pink blanket. The cat on the left, with its gray and black striped fur, is lying on its side, its head comfortably resting on the blanket. Its',
-        ]  # fmt: skip
-        self.assertEqual(
-            self.processor.batch_decode(output, skip_special_tokens=True),
-            EXPECTED_DECODED_TEXT,
-        )
+        # it should not matter whether two images are the same size or not
+        output = model.generate(**inputs, max_new_tokens=30)
+
+        expected_decoded_texts = Expectations(
+            {
+                (None, None): [
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                ],
+                ("cuda", (8, 6)): [
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                ],
+                ("rocm", None): [
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                    'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                ],
+            }
+        ).get_expectation()  # fmt: skip
+
+        decoded_texts = self.processor.batch_decode(output, skip_special_tokens=True)
+        for i, (expected, decoded) in enumerate(zip(expected_decoded_texts, decoded_texts)):
+            self.assertEqual(
+                decoded,
+                expected,
+                f"Decoded text {i}:\n{repr(decoded)}\ndoes not match expected decoded text:\n{repr(expected)}",
+            )
 
     @slow
-    @require_bitsandbytes
-    def test_small_model_integration_test_batch_matches_single(self):
+    @require_flash_attn
+    @require_torch_gpu
+    def test_small_model_integration_test_batch_flashatt2(self):
         model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
-            "llava-hf/llava-onevision-qwen2-0.5b-ov-hf",
-            dtype="float16",
-            device_map=torch_device,
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf",
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="auto",
+        )
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text, text], images=[self.image, self.image], return_tensors="pt").to(
+            torch_device
         )
 
-        url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-        lowres_url = "https://4.img-dpreview.com/files/p/TS560x560~forums/56876524/03975b28741443319e9a94615e35667e"
-        cats_image = Image.open(requests.get(url, stream=True).raw)
-        lowres_img = Image.open(requests.get(lowres_url, stream=True).raw)
+        # it should not matter whether two images are the same size or not
+        output = model.generate(**inputs, max_new_tokens=30)
 
-        inputs_batched = self.processor(
-            text=[self.prompt_image, self.prompt_image],
-            images=[lowres_img, cats_image],
-            return_tensors="pt",
-            padding=True,
-        ).to(torch_device, torch.float16)
+        expected_decoded_text = Expectations({
+            ("cuda", None): 'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+            ("rocm", (9, 4)): 'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever'
+        }).get_expectation()  # fmt: skip
 
-        inputs_single = self.processor(
-            text=self.prompt_image, images=lowres_img, return_tensors="pt", padding=True
-        ).to(torch_device, torch.float16)
+        # Since the test is to generate twice the same text, we just test twice against the expected decoded text
+        decoded_texts = self.processor.batch_decode(output, skip_special_tokens=True)
+        self.assertEqual(decoded_texts[0], expected_decoded_text)
+        self.assertEqual(decoded_texts[1], expected_decoded_text)
 
-        # verify generation
-        output_batched = model.generate(**inputs_batched, max_new_tokens=50)
-        output_single = model.generate(**inputs_single, max_new_tokens=50)
-
-        self.assertEqual(
-            self.processor.decode(output_batched[0], skip_special_tokens=True),
-            self.processor.decode(output_single[0], skip_special_tokens=True),
+    @slow
+    @require_flash_attn
+    @require_torch_gpu
+    def test_small_model_integration_test_batch_wo_image_flashatt2(self):
+        model = LlavaOnevision1_5ForConditionalGeneration.from_pretrained(
+            "Deep-VLM/LLaVA-OneVision-1.5-8B-Instruct-hf",
+            dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="auto",
         )
+        text = self.processor.apply_chat_template(self.messages, tokenize=False, add_generation_prompt=True)
+        messages2 = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Who are you?"},
+        ]
+        text2 = self.processor.apply_chat_template(messages2, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text, text2], images=[self.image], padding=True, return_tensors="pt").to(
+            torch_device
+        )
+
+        # it should not matter whether two images are the same size or not
+        output = model.generate(**inputs, max_new_tokens=30)
+
+        # FIXME: The second decoded text in the CUDA expectation seems to be incorrect, it used to be the second text
+        # on the ROCm expectation that was the correct one. Either model changed or code is buggy.
+        EXPECTED_DECODED_TEXT = Expectations({
+            ("cuda", None): [
+                'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                'system\nYou are a helpful assistant.\nuser\nWho are you?\nassistant\nHuman',
+            ],
+            ("rocm", (9, 4)): [
+                'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever',
+                'system\nYou are a helpful assistant.\nuser\nWho are you?\nassistant\nHuman',
+            ],
+        }).get_expectation()  # fmt: skip
+
+        decoded_text = self.processor.batch_decode(output, skip_special_tokens=True)
+        self.assertEqual(decoded_text, EXPECTED_DECODED_TEXT)
+
+    @unittest.skip(
+        "Skipping video test as the small model does not handle video inputs yet."
+    )
+    def test_small_model_integration_test_with_video(self):
+        pass
