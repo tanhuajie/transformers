@@ -35,7 +35,6 @@ from transformers.testing_utils import (
     slow,
     torch_device,
 )
-from transformers.utils import is_cv2_available
 
 from ...generation.test_utils import GenerationTesterMixin
 from ...test_configuration_common import ConfigTester
@@ -68,10 +67,10 @@ class LlavaOnevisionVision1_5Text2TextModelTester:
         eos_token_id=1,
         pad_token_id=2,
         vision_start_token_id=3,
-        image_token_id = 151655,
-        video_token_id = 151656,
-        vocab_size = 151936,
-        text_config = {
+        image_token_id=151655,
+        video_token_id=151656,
+        vocab_size=151936,
+        text_config={
             "attention_bias": False,
             "attention_dropout": 0.0,
             "head_dim": 128,
@@ -95,9 +94,9 @@ class LlavaOnevisionVision1_5Text2TextModelTester:
             "use_cache": True,
             "use_sliding_window": False,
             "video_token_id": None,
-            "vocab_size": 151936
+            "vocab_size": 151936,
         },
-        vision_config = {
+        vision_config={
             "depth": 24,
             "embed_dim": 1024,
             "hidden_act": "gelu",
@@ -111,8 +110,8 @@ class LlavaOnevisionVision1_5Text2TextModelTester:
             "patch_size": 14,
             "spatial_merge_size": 2,
             "temporal_patch_size": 1,
-            "text_hidden_size": 4096
-        }
+            "text_hidden_size": 4096,
+        },
     ):
         self.text_config = text_config
         self.vision_config = vision_config
@@ -135,9 +134,9 @@ class LlavaOnevisionVision1_5Text2TextModelTester:
         return LlavaOnevision1_5Config(
             text_config=self.text_config,
             vision_config=self.vision_config,
-            image_token_id = 151655,
-            video_token_id = 151656,
-            vocab_size = 152064
+            image_token_id=151655,
+            video_token_id=151656,
+            vocab_size=152064,
         )
 
     def prepare_config_and_inputs(self):
@@ -344,7 +343,9 @@ class LlavaOnevision1_5ForConditionalGenerationIntegrationTest(unittest.TestCase
         inputs = inputs.to(torch_device)
 
         output = model.generate(**inputs, max_new_tokens=30)
-        EXPECTED_DECODED_TEXT = 'system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever'
+        EXPECTED_DECODED_TEXT = (
+            "system\nYou are a helpful assistant.\nuser\nWhat kind of dog is this?\nassistant\nGolden Retriever"
+        )
 
         self.assertEqual(
             self.processor.decode(output[0], skip_special_tokens=True),
@@ -533,8 +534,6 @@ class LlavaOnevision1_5ForConditionalGenerationIntegrationTest(unittest.TestCase
         decoded_text = self.processor.batch_decode(output, skip_special_tokens=True)
         self.assertEqual(decoded_text, EXPECTED_DECODED_TEXT)
 
-    @unittest.skip(
-        "Skipping video test as the small model does not handle video inputs yet."
-    )
+    @unittest.skip("Skipping video test as the small model does not handle video inputs yet.")
     def test_small_model_integration_test_with_video(self):
         pass
